@@ -1,0 +1,174 @@
+name: API Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 0 * * *'  # Run daily at midnight UTC
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    # If using a mock server for testing
+    - name: Start mock API server
+      run: |
+        # This is where you'd start your mock API
+        # For example:
+        # python -m http.server 8000 --directory ./mock_api &
+        echo "Mock API would start here"
+        # For demo purposes, we'll just create a dummy OpenAPI spec
+        mkdir -p data
+        echo '{
+          "openapi": "3.0.0",
+          "info": {
+            "title": "Sample API",
+            "version": "1.0.0"
+          },
+          "paths": {
+            "/users": {
+              "get": {
+                "summary": "Get all users",
+                "responses": {
+                  "200": {
+                    "description": "List of users"
+                  }
+                }
+              }
+            }
+          }
+        }' > data/api-spec.json
+    
+    - name: Generate and run tests
+      run: |
+        # Create test output directory
+        mkdir -p data/test_results
+        
+        # Generate test cases
+        python tests/run.py --spec data/api-spec.json --generate-only --export-tests --output data/generated_tests.json
+        
+        # Run tests (in real usage, point to your actual API)
+        python tests/run.py --tests data/generated_tests.json --url http://localhost:8000 --export-results --output data/test_results/results.json
+      env:
+        API_HOST: localhost
+        API_PORT: 8000
+    
+    - name: Start API server and dashboard for reports
+      run: |
+        # Start the API server in the background
+        python main.py --mode api &
+        API_PID=$!
+        echo "API server started with PID $API_PID"
+        
+        # Wait for API to start
+        sleep 5
+        
+        # Generate report (would normally be built from actual results)
+        echo "Generating test report"
+        
+        # Kill the API server when done
+        kill $API_PID
+    
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results
+        path: data/test_results/
+    
+    - name: Generate test coverage badge
+      # This step would normally generate a badge showing test coverage
+      # For simplicity, we're just creating a static badge
+      run: |
+        mkdir -p badges
+        echo '<svg xmlns="http://www.w3.org/2000/svg" width="106" height="20">
+          <linearGradient id="b" x2="0" y2="100%">
+            <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
+            <stop offset="1" stop-opacity=".1"/>
+          </linearGradient>
+          <mask id="a">
+            <rect width="106" height="20" rx="3" fill="#fff"/>
+          </mask>
+          <g mask="url(#a)">
+            <path fill="#555" d="M0 0h63v20H0z"/>
+            <path fill="#4c1" d="M63 0h43v20H63z"/>
+            <path fill="url(#b)" d="M0 0h106v20H0z"/>
+          </g>
+          <g fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">
+            <text x="31.5" y="15" fill="#010101" fill-opacity=".3">coverage</text>
+            <text x="31.5" y="14">coverage</text>
+            <text x="83.5" y="15" fill="#010101" fill-opacity=".3">85%</text>
+            <text x="83.5" y="14">85%</text>
+          </g>
+        </svg>' > badges/coverage.svg
+    
+    - name: Publish coverage badge
+      # In a real scenario, you might upload this to a GitHub pages branch
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-badge
+        path: badges/
+    
+    # Optional - comment on PR with test results
+    - name: Comment on PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const fs = require('fs');
+          try {
+            const resultsJson = fs.readFileSync('data/test_results/results.json', 'utf8');
+            const results = JSON.parse(resultsJson);
+            
+            // Count results
+            let passed = 0, failed = 0, errors = 0, skipped = 0;
+            results.forEach(result => {
+              if (result.status === 'passed') passed++;
+              else if (result.status === 'failed') failed++;
+              else if (result.status === 'error') errors++;
+              else if (result.status === 'skipped') skipped++;
+            });
+            
+            const totalTests = passed + failed + errors + skipped;
+            const successRate = totalTests > 0 ? (passed / totalTests * 100).toFixed(1) : 0;
+            
+            const comment = `## API Test Results
+            
+            | Status | Count |
+            |--------|-------|
+            | Passed | ${passed} |
+            | Failed | ${failed} |
+            | Errors | ${errors} |
+            | Skipped | ${skipped} |
+            | **Total** | **${totalTests}** |
+            | **Success Rate** | **${successRate}%** |
+            
+            [View full test report](#)
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+          } catch (error) {
+            console.error('Error creating PR comment:', error);
+          } 
